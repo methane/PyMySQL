@@ -1013,9 +1013,15 @@ class Connection:
         # mysql_native_password plugin), so keep dispatching until the server
         # sends a terminal packet.
         auth_plugin_name = self._auth_plugin_name
+        auth_plugin_handler = None
         auth_switch_received = False
 
         while True:
+            # Custom authentication handlers historically did not need to return
+            # the final OK packet after consuming the complete exchange.
+            if auth_packet is None and auth_plugin_handler:
+                break
+
             # if authentication method isn't accepted the first byte
             # will have the octet 254
             if auth_packet.is_auth_switch_request():
@@ -1032,7 +1038,10 @@ class Connection:
                     and plugin_name is not None
                 ):
                     auth_plugin_name = plugin_name
-                    auth_packet = self._process_auth(plugin_name, auth_packet)
+                    auth_plugin_handler = self._get_auth_plugin_handler(plugin_name)
+                    auth_packet = self._process_auth(
+                        plugin_name, auth_packet, auth_plugin_handler
+                    )
                     continue
                 raise err.OperationalError("received unknown auth switch request")
 
@@ -1040,7 +1049,10 @@ class Connection:
                 if DEBUG:
                     print("received extra data")
                 # https://dev.mysql.com/doc/internals/en/successful-authentication.html
-                if auth_plugin_name in (
+                if auth_plugin_handler:
+                    auth_packet = auth_plugin_handler.authenticate(auth_packet)
+                    continue
+                elif auth_plugin_name in (
                     b"caching_sha2_password",
                     "caching_sha2_password",
                 ):
@@ -1053,13 +1065,14 @@ class Connection:
                     "Received extra packet for auth method %r", auth_plugin_name
                 )
 
-            break
+            if auth_packet.is_ok_packet():
+                break
+            raise err.OperationalError("unexpected packet during authentication")
 
         if DEBUG:
             print("Succeed to auth")
 
-    def _process_auth(self, plugin_name, auth_packet):
-        handler = self._get_auth_plugin_handler(plugin_name)
+    def _process_auth(self, plugin_name, auth_packet, handler=None):
         if handler:
             try:
                 return handler.authenticate(auth_packet)
