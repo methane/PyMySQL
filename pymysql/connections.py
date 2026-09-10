@@ -1013,11 +1013,15 @@ class Connection:
         # mysql_native_password plugin), so keep dispatching until the server
         # sends a terminal packet.
         auth_plugin_name = self._auth_plugin_name
+        auth_switch_received = False
 
         while True:
             # if authentication method isn't accepted the first byte
             # will have the octet 254
             if auth_packet.is_auth_switch_request():
+                if auth_switch_received:
+                    raise err.OperationalError("received multiple auth switch requests")
+                auth_switch_received = True
                 if DEBUG:
                     print("received auth switch")
                 # https://dev.mysql.com/doc/internals/en/connection-phase-packets.html#packet-Protocol::AuthSwitchRequest
